@@ -1,5 +1,15 @@
 package works.weave.socks.orders.controllers;
 
+import java.io.IOException;
+import java.util.Calendar;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,24 +20,28 @@ import org.springframework.hateoas.Resource;
 import org.springframework.hateoas.mvc.TypeReferences;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.ResponseBody;
+import org.springframework.web.bind.annotation.ResponseStatus;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
 import works.weave.socks.orders.config.OrdersConfigurationProperties;
-import works.weave.socks.orders.entities.*;
+import works.weave.socks.orders.entities.Address;
+import works.weave.socks.orders.entities.Card;
+import works.weave.socks.orders.entities.Customer;
+import works.weave.socks.orders.entities.CustomerOrder;
+import works.weave.socks.orders.entities.Item;
+import works.weave.socks.orders.entities.Shipment;
 import works.weave.socks.orders.repositories.CustomerOrderRepository;
 import works.weave.socks.orders.resources.NewOrderResource;
 import works.weave.socks.orders.services.AsyncGetService;
 import works.weave.socks.orders.values.PaymentRequest;
 import works.weave.socks.orders.values.PaymentResponse;
-
-import java.io.IOException;
-import java.util.Calendar;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 
 @RepositoryRestController
@@ -50,7 +64,7 @@ public class OrdersController {
     @RequestMapping(path = "/orders", consumes = MediaType.APPLICATION_JSON_VALUE, method = RequestMethod.POST)
     public
     @ResponseBody
-    CustomerOrder newOrder(@RequestBody NewOrderResource item) {
+			ResponseEntity newOrder(@RequestBody NewOrderResource item) {
         try {
 
             if (item.address == null || item.customer == null || item.card == null || item.items == null) {
@@ -96,6 +110,7 @@ public class OrdersController {
                 throw new PaymentDeclinedException(paymentResponse.getMessage());
             }
 
+
             // Ship
             String customerId = parseId(customerFuture.get(timeout, TimeUnit.SECONDS).getId().getHref());
             Future<Shipment> shipmentFuture = asyncGetService.postResource(config.getShippingUri(), new Shipment
@@ -117,11 +132,13 @@ public class OrdersController {
             CustomerOrder savedOrder = customerOrderRepository.save(order);
             LOG.debug("Saved order: " + savedOrder);
 
-            return savedOrder;
+			return new ResponseEntity<CustomerOrder>(savedOrder, HttpStatus.CREATED);
         } catch (TimeoutException e) {
-            throw new IllegalStateException("Unable to create order due to timeout from one of the services.", e);
+			return new ResponseEntity<ObjectNode>(error(e, "orders"), HttpStatus.REQUEST_TIMEOUT);
         } catch (InterruptedException | IOException | ExecutionException e) {
             throw new IllegalStateException("Unable to create order due to unspecified IO error.", e);
+		} catch (PaymentDeclinedException | InvalidOrderException e) {
+			return new ResponseEntity<ObjectNode>(error(e, "orders"), HttpStatus.NOT_ACCEPTABLE);
         }
     }
 
@@ -133,6 +150,20 @@ public class OrdersController {
         }
         return matcher.group(0);
     }
+
+	private ObjectNode error(Exception ex, String path) {
+		ObjectMapper mapper = new ObjectMapper();
+		ObjectNode objectNode1 = mapper.createObjectNode();
+		objectNode1.put("timestamp", System.currentTimeMillis());
+		if (ex instanceof PaymentDeclinedException || ex instanceof InvalidOrderException) {
+			objectNode1.put("status", 406);
+		} else {
+			objectNode1.put("status", 500);
+		}
+		objectNode1.put("message", ex.getMessage());
+		objectNode1.put("path", path);
+		return objectNode1;
+	}
 
 //    TODO: Add link to shipping
 //    @RequestMapping(method = RequestMethod.GET, value = "/orders")
